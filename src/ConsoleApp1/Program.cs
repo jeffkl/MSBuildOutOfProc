@@ -1,16 +1,22 @@
-﻿using Microsoft.Build.Execution;
+﻿using Microsoft.Build.Evaluation;
+using Microsoft.Build.Execution;
+using Microsoft.Build.Framework;
 using Microsoft.Build.Locator;
+using Microsoft.Build.Logging;
+using Microsoft.Build.Utilities;
 using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace ConsoleApp1
 {
     public static class Program
     {
-        public static int Main(string[] args)
+        public static async Task<int> Main(string[] args)
         {
             if (args.Any())
             {
@@ -18,13 +24,14 @@ namespace ConsoleApp1
                 Thread.Sleep(TimeSpan.FromSeconds(5));
                 return 1;
             }
+
             // Determine the instance of MSBuild to use
 #if NETCOREAPP3_1_OR_GREATER
             // For .NET Core, use the version of MSBuild that matches the current runtime
             var instance = MSBuildLocator.QueryVisualStudioInstances().FirstOrDefault(i => i.Version.Major == Environment.Version.Major);
 #else
             // For .NET Framework, use the version of MSBuild that is 16
-            var instance = MSBuildLocator.QueryVisualStudioInstances().FirstOrDefault(i => i.Version.Major == 16);
+            VisualStudioInstance instance = MSBuildLocator.QueryVisualStudioInstances().FirstOrDefault(i => i.Version.Major == 16);
 #endif
 
             if (instance == null)
@@ -33,22 +40,62 @@ namespace ConsoleApp1
             }
 
             // Register the MSBuild instance
-            MSBuildLocator.RegisterInstance(instance);
+            if (Environment.Is64BitProcess && RuntimeInformation.FrameworkDescription.Contains("Framework"))
+            {
+                MSBuildLocator.RegisterMSBuildPath(Path.Combine(instance.MSBuildPath, "amd64"));
+            }
+            else
+            {
+                MSBuildLocator.RegisterInstance(instance);
+            }
 
-            return BuildProject("Restore");
+            return await BuildProjectAsync("Restore");
         }
 
-        private static int BuildProject(params string[] targets)
+        private static async Task<int> BuildProjectAsync(params string[] targets)
         {
+            ILogger[] loggers = new ILogger[]
+            {
+                new ConsoleLogger(LoggerVerbosity.Normal)
+                {
+                    Parameters = "ForceNoAlign"
+                }
+            };
+
+            MuxLogger muxLogger = new MuxLogger()
+            {
+                Verbosity = LoggerVerbosity.Diagnostic
+            };
+
+            LoggerDescription forwardingLoggerDescription = new LoggerDescription(
+                    loggerClassName: typeof(ConfigurableForwardingLogger).FullName,
+                    loggerAssemblyName: typeof(ConfigurableForwardingLogger).Assembly.GetName().FullName,
+                    loggerAssemblyFile: null,
+                    loggerSwitchParameters: "",
+                    verbosity: muxLogger.Verbosity);
+
+            ForwardingLoggerRecord forwardingLoggerRecord = new ForwardingLoggerRecord(
+                muxLogger,
+                forwardingLoggerDescription);
+
+            Dictionary<string, string> globalProperties = new Dictionary<string, string>();
+
+            using ProjectCollection projectCollection = new ProjectCollection(globalProperties, null, null, ToolsetDefinitionLocations.Default, Environment.ProcessorCount, onlyLogCriticalEvents: false, loadProjectsReadOnly: true);
+
             FileInfo projectFileInfo = CreateProjectFile();
 
             BuildManager buildManager = new BuildManager("ConsoleApp1");
 
-            BuildParameters buildParameters = new BuildParameters
+            BuildParameters buildParameters = new BuildParameters(projectCollection)
             {
                 DisableInProcNode = true,
                 EnableNodeReuse = false,
                 MaxNodeCount = Environment.ProcessorCount,
+                ResetCaches = true,
+                ForwardingLoggers = new[]
+                {
+                    forwardingLoggerRecord,
+                }
             };
 
             buildManager.BeginBuild(buildParameters);
@@ -63,7 +110,24 @@ namespace ConsoleApp1
 
                 BuildSubmission buildSubmission = buildManager.PendBuildRequest(buildRequest);
 
-                BuildResult buildResult = buildSubmission.Execute();
+                foreach (ILogger logger in loggers)
+                {
+                    muxLogger.RegisterLogger(buildSubmission.SubmissionId, logger);
+                }
+
+                TaskCompletionSource<BuildResult> taskCompletionSource = new TaskCompletionSource<BuildResult>();
+
+                buildManager.SetCurrentHost(@"C:\Program Files\dotnet\dotnet.exe");
+
+                buildSubmission.ExecuteAsync(submission =>
+                    {
+                        taskCompletionSource.TrySetResult(buildSubmission.BuildResult);
+
+                        muxLogger.UnregisterLoggers(buildSubmission.SubmissionId);
+                    },
+                    context: null);
+
+                BuildResult buildResult = await taskCompletionSource.Task;
 
                 if (buildResult.OverallResult != BuildResultCode.Success)
                 {
@@ -105,7 +169,7 @@ namespace ConsoleApp1
                 projectFileInfo.FullName,
                 @"<Project Sdk=""Microsoft.NET.Sdk"">
   <PropertyGroup>
-    <TargetFramework>net472</TargetFramework>
+    <TargetFramework>net5.0</TargetFramework>
   </PropertyGroup>
 </Project>");
 

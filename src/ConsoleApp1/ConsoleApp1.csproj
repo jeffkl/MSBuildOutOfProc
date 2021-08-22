@@ -2,10 +2,14 @@
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFrameworks>net472;netcoreapp3.1;net5.0</TargetFrameworks>
+    <LangVersion>Latest</LangVersion>
+    <Platforms>x86;x64</Platforms>
+    <MSBuildPackageVersion>16.10.0</MSBuildPackageVersion>
+    <MSBuildPackageVersion Condition="'$(TargetFramework)' == 'netcoreapp3.1'">16.9.0</MSBuildPackageVersion>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="Microsoft.Build" Version="16.10.0" ExcludeAssets="Runtime" Condition="'$(TargetFramework)' == 'net472' Or '$(TargetFramework)' == 'net5.0'" />
-    <PackageReference Include="Microsoft.Build" Version="16.9.0" ExcludeAssets="Runtime" Condition="'$(TargetFramework)' == 'netcoreapp3.1'" />
+    <PackageReference Include="Microsoft.Build" Version="$(MSBuildPackageVersion)" ExcludeAssets="Runtime" />
+    <PackageReference Include="Microsoft.Build.Utilities.Core" Version="$(MSBuildPackageVersion)" ExcludeAssets="Runtime" />
     <PackageReference Include="Microsoft.Build.Locator" Version="1.4.1" />
   </ItemGroup>
 </Project>
